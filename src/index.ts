@@ -5,6 +5,7 @@ import tradeExecutor from './services/tradeExecutor';
 import tradeMonitor from './services/tradeMonitor';
 import Logger from './utils/logger';
 import test from './test/test';
+import { startUserChannel } from './services/wsClient';
 
 const USER_ADDRESSES = ENV.USER_ADDRESSES;
 const PROXY_WALLET = ENV.PROXY_WALLET;
@@ -16,6 +17,9 @@ export const main = async () => {
     Logger.info('Initializing CLOB client...');
     const clobClient = await createClobClient();
     Logger.success('CLOB client ready');
+
+    // Start WS user-channel for our own orders (optional markets filter)
+    startUserChannel(clobClient);
 
     Logger.separator();
     Logger.info('Starting trade monitor...');

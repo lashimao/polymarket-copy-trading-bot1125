@@ -4,6 +4,7 @@ import { UserActivityInterface, UserPositionInterface } from '../interfaces/User
 import { getUserActivityModel } from '../models/userHistory';
 import Logger from './logger';
 import { calculateOrderSize } from '../config/copyStrategy';
+import { ensureMarketFeed, getCachedBook } from '../services/wsClient';
 
 const RETRY_LIMIT = ENV.RETRY_LIMIT;
 const COPY_STRATEGY_CONFIG = ENV.COPY_STRATEGY_CONFIG;
@@ -189,6 +190,15 @@ const postOrder = async (
         let totalBoughtTokens = 0; // Track total tokens bought for this trade
 
         while (remaining > 0 && retry < RETRY_LIMIT) {
+            ensureMarketFeed(trade.asset);
+
+            // Prefer WS cache for price; fallback to HTTP order book for depth
+            let wsBestAsk: number | null = null;
+            const cached = getCachedBook(trade.asset);
+            if (cached?.bestAsk && cached.bestAsk > 0) {
+                wsBestAsk = cached.bestAsk;
+            }
+
             const orderBook = await clobClient.getOrderBook(trade.asset);
             if (!orderBook.asks || orderBook.asks.length === 0) {
                 Logger.warning('No asks available in order book');
@@ -200,8 +210,9 @@ const postOrder = async (
                 return parseFloat(ask.price) < parseFloat(min.price) ? ask : min;
             }, orderBook.asks[0]);
 
-            Logger.info(`Best ask: ${minPriceAsk.size} @ $${minPriceAsk.price}`);
-            if (parseFloat(minPriceAsk.price) - 0.05 > trade.price) {
+            const bestAskPrice = wsBestAsk ?? parseFloat(minPriceAsk.price);
+            Logger.info(`Best ask: ${minPriceAsk.size} @ $${bestAskPrice}`);
+            if (bestAskPrice - 0.05 > trade.price) {
                 Logger.warning('Price slippage too high - skipping trade');
                 await UserActivity.updateOne({ _id: trade._id }, { bot: true });
                 break;
@@ -214,17 +225,17 @@ const postOrder = async (
                 break;
             }
 
-            const maxOrderSize = parseFloat(minPriceAsk.size) * parseFloat(minPriceAsk.price);
+            const maxOrderSize = parseFloat(minPriceAsk.size) * bestAskPrice;
             const orderSize = Math.min(remaining, maxOrderSize);
 
             const order_arges = {
                 side: Side.BUY,
                 tokenID: trade.asset,
                 amount: orderSize,
-                price: parseFloat(minPriceAsk.price),
+                price: bestAskPrice,
             };
 
-            Logger.info(`Creating order: $${orderSize.toFixed(2)} @ $${minPriceAsk.price} (Balance: $${my_balance.toFixed(2)})`);
+            Logger.info(`Creating order: $${orderSize.toFixed(2)} @ $${bestAskPrice} (Balance: $${my_balance.toFixed(2)})`);
             // Order args logged internally
             const signedOrder = await clobClient.createMarketOrder(order_arges);
             const resp = await clobClient.postOrder(signedOrder, OrderType.FOK);
@@ -355,6 +366,15 @@ const postOrder = async (
         let totalSoldTokens = 0; // Track total tokens sold
 
         while (remaining > 0 && retry < RETRY_LIMIT) {
+            ensureMarketFeed(trade.asset);
+
+            // Prefer WS cache for price; fallback to HTTP order book
+            let wsBestBid: number | null = null;
+            const cached = getCachedBook(trade.asset);
+            if (cached?.bestBid && cached.bestBid > 0) {
+                wsBestBid = cached.bestBid;
+            }
+
             const orderBook = await clobClient.getOrderBook(trade.asset);
             if (!orderBook.bids || orderBook.bids.length === 0) {
                 await UserActivity.updateOne({ _id: trade._id }, { bot: true });
@@ -366,7 +386,8 @@ const postOrder = async (
                 return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
             }, orderBook.bids[0]);
 
-            Logger.info(`Best bid: ${maxPriceBid.size} @ $${maxPriceBid.price}`);
+            const bestBidPrice = wsBestBid ?? parseFloat(maxPriceBid.price);
+            Logger.info(`Best bid: ${maxPriceBid.size} @ $${bestBidPrice}`);
 
             // Check if remaining amount is below minimum before creating order
             if (remaining < MIN_ORDER_SIZE_TOKENS) {
@@ -388,7 +409,7 @@ const postOrder = async (
                 side: Side.SELL,
                 tokenID: trade.asset,
                 amount: sellAmount,
-                price: parseFloat(maxPriceBid.price),
+                price: bestBidPrice,
             };
             // Order args logged internally
             const signedOrder = await clobClient.createMarketOrder(order_arges);

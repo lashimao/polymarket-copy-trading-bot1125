@@ -65,6 +65,9 @@ const createClobClient = async (): Promise<ClobClient> => {
         isProxySafe ? PROXY_WALLET as string : undefined
     );
 
+    // Attach API creds for downstream WS auth usage
+    (clobClient as any).__apiCreds = creds;
+
     // Restore console functions
     console.log = originalConsoleLog;
     console.error = originalConsoleError;
